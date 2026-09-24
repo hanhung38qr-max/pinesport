@@ -36,6 +36,11 @@
       <view v-if="camReady" class="cam__toggle" @click="toggleSkeleton">
         {{ skeletonOn ? '关闭骨架' : '骨架预览' }}
       </view>
+      <view v-if="camReady && zoomCap" class="cam__zoom">
+        <text class="cam__zoom-btn" @click="setZoom(zoomVal - zoomCap.step)">−</text>
+        <text class="cam__zoom-val">{{ zoomVal.toFixed(1) }}x</text>
+        <text class="cam__zoom-btn" @click="setZoom(zoomVal + zoomCap.step)">＋</text>
+      </view>
     </view>
 
     <!-- HUD -->
@@ -146,6 +151,9 @@ const poseStatus = computed(() => {
 
 const motionCounter = new MotionCounter()
 const countdown = ref(0)
+const zoomCap = ref(null)
+const zoomVal = ref(1)
+let videoTrack = null
 let countdownTimer = null
 let preRoll = []
 
@@ -264,7 +272,40 @@ async function toggleSkeleton() {
   }
 }
 
+function initZoom(stream) {
+  try {
+    const track = stream.getVideoTracks()[0]
+    if (!track) return
+    videoTrack = track
+    const caps = typeof track.getCapabilities === 'function' ? track.getCapabilities() : null
+    if (caps && caps.zoom && caps.zoom.max > caps.zoom.min) {
+      zoomCap.value = {
+        min: caps.zoom.min,
+        max: caps.zoom.max,
+        step: caps.zoom.step || 0.1
+      }
+      const st = track.getSettings()
+      zoomVal.value = st.zoom ?? caps.zoom.min
+    }
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function setZoom(v) {
+  if (!zoomCap.value || !videoTrack) return
+  const z = Math.min(zoomCap.value.max, Math.max(zoomCap.value.min, v))
+  zoomVal.value = z
+  try {
+    videoTrack.applyConstraints({ advanced: [{ zoom: z }] })
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 function stopMediaStream() {
+  zoomCap.value = null
+  videoTrack = null
   if (mediaStream) {
     mediaStream.getTracks().forEach((t) => {
       try {
@@ -320,6 +361,7 @@ async function startCamera() {
       return
     }
     mediaStream = stream
+    initZoom(stream)
     await nextTick()
     if (seq !== camStartSeq) return
     const box = document.getElementById('camBox') || document.querySelector('.cam')
@@ -481,7 +523,7 @@ function evaluateAutoStart(inc) {
   while (preRoll.length && now - preRoll[0] > 2500) preRoll.shift()
 
   const rhythm = preRoll.length >= 2
-  const inFrame = motionCounter.motionSpan > 0.4
+  const inFrame = motionCounter.spanHold > 0.35
 
   if (countdown.value > 0) {
     if (!inFrame) stopCountdown()
@@ -807,6 +849,28 @@ function goBack() {
   margin-top: 16rpx;
   color: rgba(255, 255, 255, 0.9);
   font-size: 28rpx;
+}
+.cam__zoom {
+  position: absolute;
+  top: 60rpx;
+  right: 16rpx;
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1rpx solid rgba(255, 255, 255, 0.25);
+  border-radius: 999rpx;
+  padding: 4rpx 14rpx;
+  z-index: 6;
+}
+.cam__zoom-btn {
+  color: #6ce9a6;
+  font-size: 28rpx;
+  padding: 0 8rpx;
+}
+.cam__zoom-val {
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 20rpx;
 }
 .sensor,
 .manual {
