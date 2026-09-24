@@ -76,28 +76,28 @@ let lastBeepAt = 0
 export function countBeep(count) {
   if (!enabled) return
   const now = Date.now()
-  if (now - lastBeepAt < 160) return
+  if (now - lastBeepAt < 120) return
   lastBeepAt = now
   resumeAudio()
 
   const isMilestone = count > 0 && count % 10 === 0
   const isFifty = count > 0 && count % 50 === 0
 
-  // rope whoosh
-  playTone({ freq: 520, freqEnd: 1600, durationMs: 70, gain: isMilestone ? 0.07 : 0.045, type: 'sine' })
-  playNoise({ durationMs: 70, gain: isMilestone ? 0.055 : 0.03 })
+  // rope whoosh — 更明显
+  playTone({ freq: 480, freqEnd: 1800, durationMs: 90, gain: isMilestone ? 0.12 : 0.08, type: 'sine' })
+  playNoise({ durationMs: 80, gain: isMilestone ? 0.08 : 0.05 })
 
   // landing click
   playTone({
-    freq: isMilestone ? 980 : 720,
-    durationMs: isMilestone ? 90 : 45,
-    gain: isMilestone ? 0.08 : 0.05,
+    freq: isMilestone ? 1040 : 760,
+    durationMs: isMilestone ? 100 : 55,
+    gain: isMilestone ? 0.12 : 0.08,
     type: 'triangle',
     when: 0.05
   })
 
   if (isFifty) {
-    playTone({ freq: 1240, durationMs: 110, gain: 0.07, type: 'sine', when: 0.14 })
+    playTone({ freq: 1240, durationMs: 110, gain: 0.1, type: 'sine', when: 0.14 })
   }
 }
 
@@ -110,14 +110,16 @@ export function milestoneBeep() {
 
 export function startBeep() {
   if (!enabled) return
-  playTone({ freq: 660, durationMs: 80, gain: 0.06, type: 'sine' })
-  playTone({ freq: 990, durationMs: 120, gain: 0.06, type: 'sine', when: 0.09 })
+  resumeAudio()
+  playTone({ freq: 660, durationMs: 90, gain: 0.1, type: 'sine' })
+  playTone({ freq: 990, durationMs: 140, gain: 0.1, type: 'sine', when: 0.1 })
 }
 
 export function stopBeep() {
   if (!enabled) return
-  playTone({ freq: 660, durationMs: 80, gain: 0.05, type: 'sine' })
-  playTone({ freq: 440, durationMs: 140, gain: 0.05, type: 'sine', when: 0.08 })
+  resumeAudio()
+  playTone({ freq: 660, durationMs: 90, gain: 0.09, type: 'sine' })
+  playTone({ freq: 400, durationMs: 160, gain: 0.09, type: 'sine', when: 0.09 })
 }
 
 export function errorBeep() {

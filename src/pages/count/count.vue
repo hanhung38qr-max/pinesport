@@ -124,7 +124,6 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { onLoad, onShow, onHide } from '@dcloudio/uni-app'
 import { JumpDetector, bodyCenterY } from '../../utils/jump-detector.js'
-import { estimatePose, getDetector } from '../../utils/pose-engine.js'
 import {
   ensureOverlayCanvas,
   drawSkeleton,
@@ -169,7 +168,11 @@ const camError = ref('')
 const fps = ref(0)
 const conf = ref(0)
 const poseVisible = ref(false)
+const poseStatusMsg = ref('')
+const modelReady = ref(false)
 const poseStatus = computed(() => {
+  if (poseStatusMsg.value) return poseStatusMsg.value
+  if (!modelReady.value) return '模型加载中…'
   if (conf.value >= 0.45) return '已锁定人形'
   if (conf.value >= 0.25) return '识别中'
   return '未检测到人'
@@ -193,6 +196,14 @@ let fpsTimer = null
 let startTime = 0
 let baseElapsed = 0
 let loopRunning = false
+let poseEngine = null
+let skipFrame = false
+
+async function ensurePoseEngine() {
+  if (poseEngine) return poseEngine
+  poseEngine = await import('../../utils/pose-engine.js')
+  return poseEngine
+}
 
 const calories = computed(() => {
   const v = estimateCalories({
@@ -318,12 +329,21 @@ async function startCamera() {
     }
 
     camReady.value = true
-    // pre-load model
-    getDetector().catch((e) => {
-      console.error('model load', e)
-      uni.showToast({ title: 'AI 模型加载失败，检查网络', icon: 'none' })
-    })
-    if (!loopRunning) loop()
+    poseStatusMsg.value = '正在加载 AI 模型…'
+    modelReady.value = false
+    ensurePoseEngine()
+      .then(async (eng) => {
+        await eng.getDetector()
+        modelReady.value = true
+        poseStatusMsg.value = ''
+        if (!loopRunning) loop()
+      })
+      .catch((e) => {
+        console.error('model load', e)
+        poseStatusMsg.value = '模型加载失败，可切换体感/手动'
+        uni.showToast({ title: 'AI 模型加载失败', icon: 'none' })
+      })
+    if (modelReady.value && !loopRunning) loop()
   } catch (e) {
     console.error(e)
     camError.value =
@@ -366,44 +386,67 @@ function teardownCamera() {
 async function loop() {
   if (loopRunning) return
   loopRunning = true
+  let inflight = false
 
   const tick = async () => {
     if (!loopRunning || !camReady.value) return
-    rafId = requestAnimationFrame(tick)
-    if (!videoEl || videoEl.readyState < 2) return
+    if (inflight) {
+      rafId = requestAnimationFrame(tick)
+      return
+    }
+    if (!videoEl || videoEl.readyState < 2) {
+      rafId = requestAnimationFrame(tick)
+      return
+    }
 
+    // 隔帧推理，降低主线程压力
+    if (skipFrame) {
+      skipFrame = false
+      rafId = requestAnimationFrame(tick)
+      return
+    }
+    skipFrame = true
+
+    inflight = true
     frameCount++
     try {
-      const pose = await estimatePose(videoEl)
-      if (!pose || !pose.keypoints || !pose.keypoints.length) {
-        poseVisible.value = false
-        conf.value = 0
-        if (skeletonCanvas) clearOverlay(skeletonCanvas)
-        return
+      const eng = poseEngine
+      if (!eng || !eng.isModelReady()) {
+        // 模型未就绪：只等，不推理
+      } else {
+        const pose = await eng.estimatePose(videoEl)
+        if (!pose || !pose.keypoints || !pose.keypoints.length) {
+          poseVisible.value = false
+          conf.value = 0
+          if (skeletonCanvas) clearOverlay(skeletonCanvas)
+        } else {
+          if (skeletonCanvas) {
+            drawSkeleton(skeletonCanvas, pose.keypoints, videoEl, { mirror: true })
+          }
+
+          const torso =
+            pose.keypoints.reduce((a, k) => a + (k.score || 0), 0) / pose.keypoints.length
+          conf.value = torso
+          poseVisible.value = torso >= 0.2
+
+          if (running.value && torso >= 0.2) {
+            const h = videoEl.videoHeight || 480
+            const y = bodyCenterY(pose.keypoints, h)
+            if (y != null) {
+              const inc = detector.push(-y)
+              if (inc > 0) onJump()
+            }
+          }
+        }
       }
-
-      if (skeletonCanvas) {
-        drawSkeleton(skeletonCanvas, pose.keypoints, videoEl, { mirror: true })
-      }
-
-      const torso =
-        pose.keypoints.reduce((a, k) => a + (k.score || 0), 0) / pose.keypoints.length
-      conf.value = torso
-      poseVisible.value = torso >= 0.25
-
-      if (!running.value) return
-      if (torso < 0.25) return
-
-      const h = videoEl.videoHeight || 480
-      const y = bodyCenterY(pose.keypoints, h)
-      if (y == null) return
-      // y 向下增大；跳跃 = 身体上移 = y 减小，取负后「跳起」为正峰
-      const inc = detector.push(-y)
-      if (inc > 0) onJump()
     } catch (e) {
       /* drop frame */
+    } finally {
+      inflight = false
+      if (loopRunning) rafId = requestAnimationFrame(tick)
     }
   }
+
   rafId = requestAnimationFrame(tick)
 }
 
@@ -509,6 +552,19 @@ function start() {
   if (mode.value === 'camera') {
     if (!camReady.value) startCamera()
     else if (!loopRunning) loop()
+    if (!modelReady.value && !poseStatusMsg.value) {
+      poseStatusMsg.value = '正在加载 AI 模型…'
+      ensurePoseEngine()
+        .then(async (eng) => {
+          await eng.getDetector()
+          modelReady.value = true
+          poseStatusMsg.value = ''
+          if (!loopRunning) loop()
+        })
+        .catch(() => {
+          poseStatusMsg.value = '模型加载失败'
+        })
+    }
   }
   startBeep()
 }
@@ -607,11 +663,13 @@ function goBack() {
 <style scoped>
 .count-page {
   min-height: 100vh;
+  height: 100vh;
   background: #0b1220;
   color: #fff;
   display: flex;
   flex-direction: column;
   padding-bottom: 40rpx;
+  overflow: hidden;
 }
 .nav {
   display: flex;
@@ -659,18 +717,21 @@ function goBack() {
 .cam {
   position: relative;
   flex: 1;
-  min-height: 520rpx;
+  min-height: 480rpx;
+  height: 0;
   margin: 0 24rpx;
   border-radius: 24rpx;
   overflow: hidden;
   background: #111827;
 }
 .cam__video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  min-height: 520rpx;
   object-fit: cover;
   transform: scaleX(-1);
+  background: #000;
 }
 .cam__skeleton {
   position: absolute;
