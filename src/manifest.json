@@ -1,0 +1,67 @@
+{
+    "name": "天天跳绳",
+    "appid": "",
+    "description": "无广告跳绳计数，摄像头 AI 识别",
+    "versionName": "1.0.0",
+    "versionCode": "100",
+    "transformPx": false,
+    "app-plus": {
+        "usingComponents": true,
+        "nvueStyleCompiler": "uni-app",
+        "compilerVersion": 3,
+        "splashscreen": {
+            "alwaysShowBeforeRender": true,
+            "waiting": true,
+            "autoclose": true,
+            "delay": 0
+        },
+        "modules": {},
+        "distribute": {
+            "android": {
+                "permissions": [
+                    "<uses-permission android:name=\"android.permission.CAMERA\"/>",
+                    "<uses-permission android:name=\"android.permission.RECORD_AUDIO\"/>",
+                    "<uses-permission android:name=\"android.permission.VIBRATE\"/>",
+                    "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/>",
+                    "<uses-permission android:name=\"android.permission.INTERNET\"/>",
+                    "<uses-feature android:name=\"android.hardware.camera\"/>",
+                    "<uses-feature android:name=\"android.hardware.camera.autofocus\"/>"
+                ]
+            },
+            "ios": {
+                "privacyDescription": {
+                    "NSCameraUsageDescription": "需要使用摄像头进行跳绳动作识别与计数",
+                    "NSMotionUsageDescription": "需要使用运动传感器进行体感跳绳计数",
+                    "NSMicrophoneUsageDescription": "用于跳绳计数提示音"
+                }
+            }
+        }
+    },
+    "quickapp": {},
+    "mp-weixin": {
+        "appid": "",
+        "setting": {
+            "urlCheck": false
+        },
+        "usingComponents": true
+    },
+    "mp-alipay": {
+        "usingComponents": true
+    },
+    "mp-baidu": {
+        "usingComponents": true
+    },
+    "mp-toutiao": {
+        "usingComponents": true
+    },
+    "uniStatistics": {
+        "enable": false
+    },
+    "vueVersion": "3",
+    "h5": {
+        "title": "天天跳绳",
+        "router": {
+            "mode": "hash"
+        }
+    }
+}

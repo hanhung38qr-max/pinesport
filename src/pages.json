@@ -1,0 +1,67 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationBarTitleText": "天天跳绳",
+        "enablePullDownRefresh": false
+      }
+    },
+    {
+      "path": "pages/count/count",
+      "style": {
+        "navigationBarTitleText": "开始跳绳",
+        "navigationStyle": "custom",
+        "disableScroll": true
+      }
+    },
+    {
+      "path": "pages/history/history",
+      "style": {
+        "navigationBarTitleText": "历史统计"
+      }
+    },
+    {
+      "path": "pages/goals/goals",
+      "style": {
+        "navigationBarTitleText": "目标与成就"
+      }
+    },
+    {
+      "path": "pages/settings/settings",
+      "style": {
+        "navigationBarTitleText": "设置"
+      }
+    }
+  ],
+  "tabBar": {
+    "color": "#8A8F99",
+    "selectedColor": "#12B76A",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/count/count",
+        "text": "计数"
+      },
+      {
+        "pagePath": "pages/history/history",
+        "text": "历史"
+      },
+      {
+        "pagePath": "pages/goals/goals",
+        "text": "成就"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "天天跳绳",
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "backgroundColor": "#F5F7FA"
+  }
+}
