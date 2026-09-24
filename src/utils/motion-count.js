@@ -2,24 +2,24 @@ import { JumpDetector } from './jump-detector.js'
 
 const PROC_W = 64
 const PROC_H = 48
-const SAMPLE_EVERY = 3
+const SAMPLE_EVERY = 2
 
 export class MotionCounter {
   constructor(options = {}) {
     this.w = options.w || PROC_W
     this.h = options.h || PROC_H
-    this.energyFloor = options.energyFloor ?? 0.0028
+    this.energyFloor = options.energyFloor ?? 0.0015
+    this.rowThr = options.rowThr ?? 0.02
     this.canvas = null
     this.ctx = null
     this.prevGray = null
-    this.prevRow = null
     this.energy = 0
-    this.dy = 0
+    this.motionSpan = 0
     this.frame = 0
     this.detector = new JumpDetector({
-      threshold: options.threshold ?? 0.9,
+      threshold: options.threshold ?? 0.016,
       refractoryMs: options.refractoryMs ?? 300,
-      baselineAlpha: 0.12,
+      baselineAlpha: 0.22,
       signalAlpha: 0.5
     })
   }
@@ -30,9 +30,8 @@ export class MotionCounter {
 
   reset() {
     this.prevGray = null
-    this.prevRow = null
     this.energy = 0
-    this.dy = 0
+    this.motionSpan = 0
     this.frame = 0
     this.detector.reset()
   }
@@ -53,7 +52,7 @@ export class MotionCounter {
 
     this.frame++
     const hadPrev = !!this.prevGray
-    if (this.frame % SAMPLE_EVERY !== 0 && hadPrev) return 0
+    if (hadPrev && this.frame % SAMPLE_EVERY !== 0) return 0
 
     const { w, h } = this
     try {
@@ -70,56 +69,52 @@ export class MotionCounter {
     }
 
     const gray = new Float32Array(w * h)
-    const rowSum = new Float32Array(h)
+    const rowMotion = new Float32Array(h)
     let diffSum = 0
     for (let y = 0; y < h; y++) {
       let rs = 0
+      let rd = 0
       const rowOff = y * w
       for (let x = 0; x < w; x++) {
         const i = (rowOff + x) * 4
         const g = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8
         gray[rowOff + x] = g
         rs += g
-        if (hadPrev) diffSum += Math.abs(g - this.prevGray[rowOff + x])
-      }
-      rowSum[y] = rs / w
-    }
-
-    const energy = hadPrev ? diffSum / (w * h * 255) : 0
-    this.energy = energy
-
-    let dy = 0
-    if (hadPrev && this.prevRow) {
-      const maxShift = 5
-      let best = 0
-      let bestSad = Infinity
-      for (let s = -maxShift; s <= maxShift; s++) {
-        let sad = 0
-        let n = 0
-        for (let y = maxShift; y < h - maxShift; y++) {
-          sad += Math.abs(rowSum[y] - this.prevRow[y + s])
-          n++
-        }
-        sad /= n
-        if (sad < bestSad) {
-          bestSad = sad
-          best = s
+        if (hadPrev) {
+          const d = Math.abs(g - this.prevGray[rowOff + x])
+          rd += d
+          diffSum += d
         }
       }
-      dy = best
+      rowMotion[y] = rd / w / 255
     }
-    this.dy = dy
 
     this.prevGray = gray
-    this.prevRow = rowSum
+    if (!hadPrev) {
+      this.energy = 0
+      this.motionSpan = 0
+      return 0
+    }
 
-    if (!hadPrev) return 0
+    const energy = diffSum / (w * h * 255)
+    this.energy = energy
+
+    let minRow = -1
+    let maxRow = -1
+    for (let y = 0; y < h; y++) {
+      if (rowMotion[y] > this.rowThr) {
+        if (minRow < 0) minRow = y
+        maxRow = y
+      }
+    }
+    this.motionSpan = minRow < 0 ? 0 : (maxRow - minRow) / h
+
     if (energy < this.energyFloor) return this.detector.push(0)
-    return this.detector.push(dy)
+    return this.detector.push(energy)
   }
 }
 
 export function motionThresholdFor(sensitivity) {
-  const map = { low: 1.5, normal: 0.9, high: 0.5 }
-  return map[sensitivity] ?? 0.9
+  const map = { low: 0.024, normal: 0.012, high: 0.007 }
+  return map[sensitivity] ?? 0.012
 }

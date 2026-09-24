@@ -7,19 +7,8 @@
       <view class="nav__spacer" />
     </view>
 
-    <!-- Mode tabs -->
-    <view class="modes">
-      <view
-        v-for="m in modes"
-        :key="m.id"
-        class="modes__item"
-        :class="{ active: mode === m.id }"
-        @click="switchMode(m.id)"
-      >{{ m.label }}</view>
-    </view>
-
     <!-- Camera preview -->
-    <view v-if="mode === 'camera'" class="cam" id="camBox">
+    <view class="cam" id="camBox">
       <view v-if="!camReady && !camError" class="cam__overlay">
         <text class="cam__hint">正在启动摄像头…</text>
         <text class="cam__sub">轻量帧差计数，无需下载模型</text>
@@ -29,46 +18,24 @@
         <text class="cam__sub">{{ camError }}</text>
         <view class="cam__actions">
           <button class="btn-ghost" @click="startCamera">重试</button>
-          <button class="btn-ghost" @click="switchMode('sensor')">改用体感</button>
-          <button class="btn-ghost" @click="switchMode('manual')">手动计数</button>
         </view>
+      </view>
+
+      <!-- 自动开始倒数 -->
+      <view v-if="countdown > 0" class="cam__countdown">
+        <text class="cam__cd-num">{{ countdown }}</text>
+        <text class="cam__cd-tip">站好，即将开始</text>
       </view>
 
       <view v-if="camReady && (running || poseVisible || skeletonOn)" class="cam__fps">
         {{ fps }} FPS · {{ confText }} · {{ poseStatus }}
       </view>
-      <view v-if="mode === 'camera' && camReady && !running" class="cam__guide">
-        {{ skeletonOn ? '绿色人形 = 已识别 · 全身入画后点「开始」' : '帧差计数：人影上下起伏自动 +1' }}
+      <view v-if="camReady && !running && countdown === 0" class="cam__guide">
+        全身入画并原地跳两下 → 自动倒数开始
       </view>
-      <view v-if="mode === 'camera' && camReady" class="cam__toggle" @click="toggleSkeleton">
+      <view v-if="camReady" class="cam__toggle" @click="toggleSkeleton">
         {{ skeletonOn ? '关闭骨架' : '骨架预览' }}
       </view>
-    </view>
-
-    <!-- Sensor mode -->
-    <view v-else-if="mode === 'sensor'" class="sensor">
-      <view class="sensor__icon">📳</view>
-      <text class="sensor__title">体感计数</text>
-      <text class="sensor__desc">手机放在口袋或拿在手中，跳动时自动计数。灵敏度：{{ sensitivityLabel }}</text>
-      <view class="sensor__sens">
-        <view
-          v-for="s in sensitivities"
-          :key="s.id"
-          class="sensor__chip"
-          :class="{ active: settings.cameraSensitivity === s.id }"
-          @click="setSensitivity(s.id)"
-        >{{ s.label }}</view>
-      </view>
-      <view v-if="running" class="sensor__wave">
-        <view class="sensor__bar" :style="{ height: sensorBarH + 'px' }" />
-      </view>
-    </view>
-
-    <!-- Manual mode -->
-    <view v-else class="manual">
-      <view class="manual__big" @click="tapCount">{{ jumps }}</view>
-      <text class="manual__hint">点击大数字 +1</text>
-      <view class="manual__plus" v-if="showPlus">+1</view>
     </view>
 
     <!-- HUD -->
@@ -116,8 +83,8 @@
           <view><text class="result__v">{{ calories }}</text><text class="result__k">千卡</text></view>
           <view><text class="result__v">{{ rpm }}</text><text class="result__k">次/分</text></view>
         </view>
-        <view class="result__note" v-if="mode === 'camera' && skeletonOn">AI 识别可能存在误差，可在历史中查看</view>
-        <view class="result__note" v-else-if="mode === 'camera'">帧差计数可能存在误差，可在历史中查看</view>
+        <view class="result__note" v-if="skeletonOn">AI 识别可能存在误差，可在历史中查看</view>
+        <view class="result__note" v-else>帧差计数可能存在误差，可在历史中查看</view>
         <button class="btn-primary" @click="saveSession">保存并返回</button>
         <button class="btn-ghost result__skip" @click="discard">不保存</button>
       </view>
@@ -126,9 +93,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { onLoad, onShow, onHide } from '@dcloudio/uni-app'
-import { JumpDetector } from '../../utils/jump-detector.js'
 import { MotionCounter, motionThresholdFor } from '../../utils/motion-count.js'
 import {
   ensureOverlayCanvas,
@@ -148,17 +114,6 @@ import {
   errorBeep
 } from '../../utils/audio.js'
 import { evaluateAchievements } from '../../utils/achievements.js'
-
-const modes = [
-  { id: 'camera', label: '摄像头' },
-  { id: 'sensor', label: '体感' },
-  { id: 'manual', label: '手动' }
-]
-const sensitivities = [
-  { id: 'low', label: '低' },
-  { id: 'normal', label: '中' },
-  { id: 'high', label: '高' }
-]
 
 const statusBarHeight = ref(20)
 const mode = ref('camera')
@@ -189,19 +144,16 @@ const poseStatus = computed(() => {
   return '未检测到人'
 })
 
-const showPlus = ref(false)
-const sensorBarH = ref(8)
-
-const detector = new JumpDetector()
 const motionCounter = new MotionCounter()
+const countdown = ref(0)
+let countdownTimer = null
+let preRoll = []
 
 let timer = null
 let rafId = null
 let mediaStream = null
 let videoEl = null
 let skeletonCanvas = null
-let audioTimer = null
-let sensorTimer = null
 let jumpTimestamps = []
 let frameCount = 0
 let fpsTimer = null
@@ -240,9 +192,6 @@ const rpm = computed(() => {
 const confText = computed(() =>
   skeletonOn.value ? `${Math.round(conf.value * 100)}%` : `${(energyView.value * 100).toFixed(1)}%`
 )
-const sensitivityLabel = computed(
-  () => sensitivities.find((s) => s.id === settings.value.cameraSensitivity)?.label || '中'
-)
 
 onLoad(() => {
   try {
@@ -256,13 +205,13 @@ onLoad(() => {
 })
 
 onMounted(() => {
-  if (mode.value === 'camera') startCamera()
+  startCamera()
 })
 
 onShow(() => {
   settings.value = getSettings()
   setSoundEnabled(settings.value.sound)
-  if (mode.value === 'camera' && !camReady.value && !camError.value) {
+  if (!camReady.value && !camError.value) {
     startCamera()
   }
 })
@@ -273,25 +222,9 @@ onHide(() => {
 
 onUnmounted(() => {
   teardownCamera()
-  stopSensor()
   clearTimers()
+  stopCountdown()
 })
-
-watch(mode, (m, old) => {
-  if (old === 'camera' && m !== 'camera') teardownCamera()
-  if (old === 'sensor' && m !== 'sensor') stopSensor()
-  if (m === 'camera') startCamera()
-  if (m === 'sensor') startSensorPreview()
-  detector.reset()
-})
-
-function switchMode(m) {
-  if (running.value) {
-    uni.showToast({ title: '请先结束本次', icon: 'none' })
-    return
-  }
-  mode.value = m
-}
 
 function setSensitivity(id) {
   settings.value = { ...settings.value, cameraSensitivity: id }
@@ -299,8 +232,6 @@ function setSensitivity(id) {
 }
 
 function applySensitivity() {
-  const map = { low: 0.03, normal: 0.018, high: 0.01 }
-  detector.setThreshold(map[settings.value.cameraSensitivity] || 0.018)
   motionCounter.setThreshold(motionThresholdFor(settings.value.cameraSensitivity))
 }
 
@@ -491,14 +422,13 @@ async function loop() {
     inflight = true
     frameCount++
     try {
-      // 轻量帧差计数（始终）
+      // 轻量帧差计数（始终采样）
+      const inc = motionCounter.sample(videoEl)
+      energyView.value = motionCounter.energy
       if (running.value) {
-        const inc = motionCounter.sample(videoEl)
-        energyView.value = motionCounter.energy
         if (inc > 0) onJump()
-      } else {
-        motionCounter.sample(videoEl)
-        energyView.value = motionCounter.energy
+      } else if (!finished.value) {
+        evaluateAutoStart(inc)
       }
 
       // 可选骨架预览（仅 H5 开关打开时）；否则画人形站位板
@@ -544,77 +474,54 @@ function onJump() {
   }
 }
 
-function tapCount() {
+// --- 自动开始：全身入画 + 捕捉到跳跃节奏 → 倒数 3/2/1 ---
+function evaluateAutoStart(inc) {
+  const now = Date.now()
+  if (inc > 0) preRoll.push(now)
+  while (preRoll.length && now - preRoll[0] > 2500) preRoll.shift()
+
+  const rhythm = preRoll.length >= 2
+  const inFrame = motionCounter.motionSpan > 0.4
+
+  if (countdown.value > 0) {
+    if (!inFrame) stopCountdown()
+    return
+  }
+  if (rhythm && inFrame) startCountdown()
+}
+
+function startCountdown() {
+  stopCountdown()
   resumeAudio()
-  onJump()
-  showPlus.value = true
-  setTimeout(() => (showPlus.value = false), 400)
+  countdown.value = 3
+  countBeep(3)
+  countdownTimer = setInterval(() => {
+    countdown.value -= 1
+    if (countdown.value <= 0) {
+      stopCountdown()
+      start()
+    } else {
+      countBeep(countdown.value)
+    }
+  }, 1000)
 }
 
-// --- sensor mode ---
-function sensorMagnitude(x, y, z) {
-  return Math.sqrt(x * x + y * y + z * z)
-}
-
-function startSensorPreview() {
-  applySensitivity()
-}
-
-function startSensor() {
-  applySensitivity()
-  detector.reset()
-  jumpTimestamps = []
-  try {
-    uni.startAccelerometer({
-      interval: 'game',
-      success: () => {},
-      fail: () => {
-        uni.showToast({ title: '体感不可用', icon: 'none' })
-      }
-    })
-  } catch (e) {
-    /* ignore */
-  }
-  sensorTimer && clearInterval(sensorTimer)
-  sensorTimer = null
-
-  uni.onAccelerometerChange((res) => {
-    const { x = 0, y = 0, z = 0 } = res || {}
-    const mag = sensorMagnitude(x, y, z)
-    // normalize around 1g
-    const signal = mag - 1
-    sensorBarH.value = Math.min(120, Math.max(8, Math.round(Math.abs(signal) * 400)))
-    if (!running.value) return
-    const inc = detector.push(signal)
-    if (inc > 0) onJump()
-  })
-}
-
-function stopSensor() {
-  try {
-    uni.stopAccelerometer({})
-  } catch (e) {
-    /* ignore */
-  }
-  if (sensorTimer) {
-    clearInterval(sensorTimer)
-    sensorTimer = null
-  }
-  try {
-    uni.offAccelerometerChange(() => {})
-  } catch (e) {
-    /* ignore */
-  }
+function stopCountdown() {
+  if (countdownTimer) clearInterval(countdownTimer)
+  countdownTimer = null
+  if (countdown.value !== 0) countdown.value = 0
 }
 
 // --- session control ---
 function start() {
   resumeAudio()
   setSoundEnabled(settings.value.sound)
+  stopCountdown()
+  preRoll = []
   finished.value = false
   saved.value = false
   running.value = true
-  detector.reset()
+  motionCounter.reset()
   jumpTimestamps = []
   startTime = Date.now()
   baseElapsed = 0
@@ -632,26 +539,22 @@ function start() {
     frameCount = 0
   }, 1000)
 
-  if (mode.value === 'sensor') startSensor()
-  if (mode.value === 'camera') {
-    if (!camReady.value) startCamera()
-    else if (!loopRunning) loop()
-    motionCounter.reset()
-  }
+  if (!camReady.value) startCamera()
+  else if (!loopRunning) loop()
   startBeep()
 }
 
 function pause() {
   running.value = false
   baseElapsed = elapsed.value
-  stopSensor()
+  preRoll = []
   stopBeep()
 }
 
 function finish() {
   running.value = false
   baseElapsed = elapsed.value
-  stopSensor()
+  preRoll = []
   finished.value = true
   stopBeep()
 }
@@ -668,7 +571,8 @@ function resetAll() {
   jumps.value = 0
   elapsed.value = 0
   baseElapsed = 0
-  detector.reset()
+  stopCountdown()
+  preRoll = []
   motionCounter.reset()
   jumpTimestamps = []
   clearTimers()
@@ -721,7 +625,7 @@ function goBack() {
         if (r.confirm) {
           running.value = false
           teardownCamera()
-          stopSensor()
+          stopCountdown()
           clearTimers()
           uni.switchTab({ url: '/pages/index/index' })
         }
@@ -881,6 +785,28 @@ function goBack() {
   border-radius: 999rpx;
   font-size: 20rpx;
   z-index: 6;
+}
+.cam__countdown {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 7;
+}
+.cam__cd-num {
+  font-size: 200rpx;
+  font-weight: 900;
+  color: #6ce9a6;
+  line-height: 1;
+  text-shadow: 0 0 40rpx rgba(18, 183, 106, 0.9);
+}
+.cam__cd-tip {
+  margin-top: 16rpx;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 28rpx;
 }
 .sensor,
 .manual {

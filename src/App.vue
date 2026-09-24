@@ -1,6 +1,13 @@
 <script>
 export default {
-  onLaunch() {},
+  onLaunch() {
+    // #ifdef H5
+    // 启动即后台预加载骨架模型 + 预热着色器，进计数页秒开
+    import('./utils/pose-engine.js')
+      .then((m) => m.preload())
+      .catch(() => {})
+    // #endif
+  },
   onShow() {},
   onHide() {}
 }
