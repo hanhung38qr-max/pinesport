@@ -22,7 +22,7 @@
     <view v-if="mode === 'camera'" class="cam" id="camBox">
       <view v-if="!camReady && !camError" class="cam__overlay">
         <text class="cam__hint">正在启动摄像头…</text>
-        <text class="cam__sub">首次需加载 AI 姿态模型（需网络）</text>
+        <text class="cam__sub">轻量帧差计数，无需下载模型</text>
       </view>
       <view v-if="camError" class="cam__overlay">
         <text class="cam__hint">摄像头不可用</text>
@@ -33,11 +33,14 @@
         </view>
       </view>
 
-      <view v-if="camReady && (running || poseVisible)" class="cam__fps">
-        {{ fps }} FPS · 置信 {{ confText }} · {{ poseStatus }}
+      <view v-if="camReady && (running || poseVisible || skeletonOn)" class="cam__fps">
+        {{ fps }} FPS · {{ confText }} · {{ poseStatus }}
       </view>
       <view v-if="mode === 'camera' && camReady && !running" class="cam__guide">
-        绿色人形 = 已识别 · 全身入画后点「开始」
+        {{ skeletonOn ? '绿色人形 = 已识别 · 全身入画后点「开始」' : '帧差计数：人影上下起伏自动 +1' }}
+      </view>
+      <view v-if="mode === 'camera' && camReady" class="cam__toggle" @click="toggleSkeleton">
+        {{ skeletonOn ? '关闭骨架' : '骨架预览' }}
       </view>
     </view>
 
@@ -112,7 +115,8 @@
           <view><text class="result__v">{{ calories }}</text><text class="result__k">千卡</text></view>
           <view><text class="result__v">{{ rpm }}</text><text class="result__k">次/分</text></view>
         </view>
-        <view class="result__note" v-if="mode === 'camera'">AI 识别可能存在误差，可在历史中查看</view>
+        <view class="result__note" v-if="mode === 'camera' && skeletonOn">AI 识别可能存在误差，可在历史中查看</view>
+        <view class="result__note" v-else-if="mode === 'camera'">帧差计数可能存在误差，可在历史中查看</view>
         <button class="btn-primary" @click="saveSession">保存并返回</button>
         <button class="btn-ghost result__skip" @click="discard">不保存</button>
       </view>
@@ -123,7 +127,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { onLoad, onShow, onHide } from '@dcloudio/uni-app'
-import { JumpDetector, bodyCenterY } from '../../utils/jump-detector.js'
+import { JumpDetector } from '../../utils/jump-detector.js'
+import { MotionCounter, motionThresholdFor } from '../../utils/motion-count.js'
 import {
   ensureOverlayCanvas,
   drawSkeleton,
@@ -143,7 +148,7 @@ import {
 import { evaluateAchievements } from '../../utils/achievements.js'
 
 const modes = [
-  { id: 'camera', label: '摄像头AI' },
+  { id: 'camera', label: '摄像头' },
   { id: 'sensor', label: '体感' },
   { id: 'manual', label: '手动' }
 ]
@@ -167,12 +172,16 @@ const camReady = ref(false)
 const camError = ref('')
 const fps = ref(0)
 const conf = ref(0)
+const energyView = ref(0)
 const poseVisible = ref(false)
 const poseStatusMsg = ref('')
 const modelReady = ref(false)
+const skeletonOn = ref(false)
+const isH5 = typeof process !== 'undefined' && process.env && process.env.UNI_PLATFORM === 'h5'
 const poseStatus = computed(() => {
   if (poseStatusMsg.value) return poseStatusMsg.value
-  if (!modelReady.value) return '模型加载中…'
+  if (!skeletonOn.value) return energyView.value > 0.004 ? '检测到运动' : '画面静止'
+  if (!modelReady.value) return '骨架模型加载中…'
   if (conf.value >= 0.45) return '已锁定人形'
   if (conf.value >= 0.25) return '识别中'
   return '未检测到人'
@@ -182,6 +191,7 @@ const showPlus = ref(false)
 const sensorBarH = ref(8)
 
 const detector = new JumpDetector()
+const motionCounter = new MotionCounter()
 
 let timer = null
 let rafId = null
@@ -201,8 +211,13 @@ let skipFrame = false
 
 async function ensurePoseEngine() {
   if (poseEngine) return poseEngine
+  // #ifdef H5
   poseEngine = await import('../../utils/pose-engine.js')
   return poseEngine
+  // #endif
+  // #ifndef H5
+  throw new Error('skeleton only on H5')
+  // #endif
 }
 
 const calories = computed(() => {
@@ -220,7 +235,9 @@ const rpm = computed(() => {
   return Math.round((jumps.value / elapsed.value) * 60)
 })
 
-const confText = computed(() => `${Math.round(conf.value * 100)}%`)
+const confText = computed(() =>
+  skeletonOn.value ? `${Math.round(conf.value * 100)}%` : `${(energyView.value * 100).toFixed(1)}%`
+)
 const sensitivityLabel = computed(
   () => sensitivities.find((s) => s.id === settings.value.cameraSensitivity)?.label || '中'
 )
@@ -282,6 +299,36 @@ function setSensitivity(id) {
 function applySensitivity() {
   const map = { low: 0.03, normal: 0.018, high: 0.01 }
   detector.setThreshold(map[settings.value.cameraSensitivity] || 0.018)
+  motionCounter.setThreshold(motionThresholdFor(settings.value.cameraSensitivity))
+}
+
+async function toggleSkeleton() {
+  if (skeletonOn.value) {
+    skeletonOn.value = false
+    poseVisible.value = false
+    conf.value = 0
+    if (skeletonCanvas) clearOverlay(skeletonCanvas)
+    return
+  }
+  if (!isH5) {
+    uni.showToast({ title: '骨架预览暂仅 H5 可用', icon: 'none' })
+    return
+  }
+  skeletonOn.value = true
+  poseStatusMsg.value = '正在加载骨架模型…'
+  try {
+    const eng = await ensurePoseEngine()
+    await eng.getDetector()
+    modelReady.value = true
+    poseStatusMsg.value = ''
+    if (!loopRunning) loop()
+  } catch (e) {
+    console.error('model load', e)
+    modelReady.value = false
+    poseStatusMsg.value = '骨架加载失败'
+    skeletonOn.value = false
+    uni.showToast({ title: '骨架模型加载失败', icon: 'none' })
+  }
 }
 
 async function startCamera() {
@@ -329,21 +376,10 @@ async function startCamera() {
     }
 
     camReady.value = true
-    poseStatusMsg.value = '正在加载 AI 模型…'
+    poseStatusMsg.value = ''
     modelReady.value = false
-    ensurePoseEngine()
-      .then(async (eng) => {
-        await eng.getDetector()
-        modelReady.value = true
-        poseStatusMsg.value = ''
-        if (!loopRunning) loop()
-      })
-      .catch((e) => {
-        console.error('model load', e)
-        poseStatusMsg.value = '模型加载失败，可切换体感/手动'
-        uni.showToast({ title: 'AI 模型加载失败', icon: 'none' })
-      })
-    if (modelReady.value && !loopRunning) loop()
+    motionCounter.reset()
+    if (!loopRunning) loop()
   } catch (e) {
     console.error(e)
     camError.value =
@@ -356,6 +392,7 @@ async function startCamera() {
 
 function teardownCamera() {
   loopRunning = false
+  motionCounter.reset()
   if (rafId) {
     cancelAnimationFrame(rafId)
     rafId = null
@@ -410,10 +447,19 @@ async function loop() {
     inflight = true
     frameCount++
     try {
-      const eng = poseEngine
-      if (!eng || !eng.isModelReady()) {
-        // 模型未就绪：只等，不推理
+      // 轻量帧差计数（始终）
+      if (running.value) {
+        const inc = motionCounter.sample(videoEl)
+        energyView.value = motionCounter.energy
+        if (inc > 0) onJump()
       } else {
+        motionCounter.sample(videoEl)
+        energyView.value = motionCounter.energy
+      }
+
+      // 可选骨架预览（仅 H5 开关打开时）
+      const eng = poseEngine
+      if (skeletonOn.value && eng && eng.isModelReady()) {
         const pose = await eng.estimatePose(videoEl)
         if (!pose || !pose.keypoints || !pose.keypoints.length) {
           poseVisible.value = false
@@ -423,21 +469,15 @@ async function loop() {
           if (skeletonCanvas) {
             drawSkeleton(skeletonCanvas, pose.keypoints, videoEl, { mirror: true })
           }
-
           const torso =
             pose.keypoints.reduce((a, k) => a + (k.score || 0), 0) / pose.keypoints.length
           conf.value = torso
           poseVisible.value = torso >= 0.2
-
-          if (running.value && torso >= 0.2) {
-            const h = videoEl.videoHeight || 480
-            const y = bodyCenterY(pose.keypoints, h)
-            if (y != null) {
-              const inc = detector.push(-y)
-              if (inc > 0) onJump()
-            }
-          }
         }
+      } else if (!skeletonOn.value) {
+        if (skeletonCanvas) clearOverlay(skeletonCanvas)
+        poseVisible.value = false
+        conf.value = 0
       }
     } catch (e) {
       /* drop frame */
@@ -552,19 +592,7 @@ function start() {
   if (mode.value === 'camera') {
     if (!camReady.value) startCamera()
     else if (!loopRunning) loop()
-    if (!modelReady.value && !poseStatusMsg.value) {
-      poseStatusMsg.value = '正在加载 AI 模型…'
-      ensurePoseEngine()
-        .then(async (eng) => {
-          await eng.getDetector()
-          modelReady.value = true
-          poseStatusMsg.value = ''
-          if (!loopRunning) loop()
-        })
-        .catch(() => {
-          poseStatusMsg.value = '模型加载失败'
-        })
-    }
+    motionCounter.reset()
   }
   startBeep()
 }
@@ -597,6 +625,7 @@ function resetAll() {
   elapsed.value = 0
   baseElapsed = 0
   detector.reset()
+  motionCounter.reset()
   jumpTimestamps = []
   clearTimers()
 }
@@ -792,6 +821,18 @@ function goBack() {
   color: rgba(255, 255, 255, 0.85);
   background: rgba(0, 0, 0, 0.45);
   padding: 12rpx;
+  z-index: 6;
+}
+.cam__toggle {
+  position: absolute;
+  top: 16rpx;
+  right: 16rpx;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1rpx solid rgba(255, 255, 255, 0.25);
+  color: #6ce9a6;
+  padding: 6rpx 18rpx;
+  border-radius: 999rpx;
+  font-size: 20rpx;
   z-index: 6;
 }
 .sensor,
