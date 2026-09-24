@@ -28,6 +28,7 @@
         <text class="cam__hint">摄像头不可用</text>
         <text class="cam__sub">{{ camError }}</text>
         <view class="cam__actions">
+          <button class="btn-ghost" @click="startCamera">重试</button>
           <button class="btn-ghost" @click="switchMode('sensor')">改用体感</button>
           <button class="btn-ghost" @click="switchMode('manual')">手动计数</button>
         </view>
@@ -253,20 +254,20 @@ onLoad(() => {
   setSoundEnabled(settings.value.sound)
 })
 
+onMounted(() => {
+  if (mode.value === 'camera') startCamera()
+})
+
 onShow(() => {
   settings.value = getSettings()
   setSoundEnabled(settings.value.sound)
-  if (mode.value === 'camera' && !camReady.value && !camError.value && running.value) {
+  if (mode.value === 'camera' && !camReady.value && !camError.value) {
     startCamera()
   }
 })
 
 onHide(() => {
   /* keep state */
-})
-
-onMounted(() => {
-  if (mode.value === 'camera') startCamera()
 })
 
 onUnmounted(() => {
@@ -331,18 +332,49 @@ async function toggleSkeleton() {
   }
 }
 
+function stopMediaStream() {
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((t) => {
+      try {
+        t.stop()
+      } catch (e) {
+        /* ignore */
+      }
+    })
+    mediaStream = null
+  }
+  if (videoEl) {
+    try {
+      videoEl.srcObject = null
+    } catch (e) {
+      /* ignore */
+    }
+    if (videoEl.parentNode) videoEl.parentNode.removeChild(videoEl)
+    videoEl = null
+  }
+}
+
+let camStartSeq = 0
+
 async function startCamera() {
+  const seq = ++camStartSeq
   camError.value = ''
   camReady.value = false
   applySensitivity()
+  stopMediaStream()
 
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    camError.value = '当前环境不支持摄像头（需 HTTPS 或 App WebView）'
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    const secure =
+      typeof location !== 'undefined' &&
+      (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+    camError.value = secure
+      ? '当前浏览器不提供摄像头 API'
+      : '非安全上下文无摄像头（需 localhost 或 HTTPS）'
     return
   }
 
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: 'user',
         width: { ideal: 640 },
@@ -351,13 +383,19 @@ async function startCamera() {
       },
       audio: false
     })
+    if (seq !== camStartSeq) {
+      stream.getTracks().forEach((t) => t.stop())
+      return
+    }
+    mediaStream = stream
     await nextTick()
+    if (seq !== camStartSeq) return
     const box = document.getElementById('camBox') || document.querySelector('.cam')
     if (!box) {
       camError.value = '预览容器未就绪'
+      stopMediaStream()
       return
     }
-    if (videoEl && videoEl.parentNode) videoEl.parentNode.removeChild(videoEl)
     videoEl = document.createElement('video')
     videoEl.className = 'cam__video'
     videoEl.autoplay = true
@@ -374,18 +412,28 @@ async function startCamera() {
     } catch (e) {
       /* autoplay may need gesture */
     }
+    if (seq !== camStartSeq) return
 
     camReady.value = true
+    camError.value = ''
     poseStatusMsg.value = ''
     modelReady.value = false
     motionCounter.reset()
     if (!loopRunning) loop()
   } catch (e) {
+    if (seq !== camStartSeq) return
     console.error(e)
-    camError.value =
-      e && e.name === 'NotAllowedError'
-        ? '摄像头权限被拒绝，请在系统设置中允许'
-        : '无法打开摄像头：' + (e && e.message ? e.message : '未知错误')
+    stopMediaStream()
+    const name = e && e.name
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      camError.value = '摄像头权限被拒绝，请在浏览器地址栏或系统设置中允许'
+    } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+      camError.value = '未检测到可用摄像头'
+    } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+      camError.value = '摄像头被其他应用占用，关闭后重试'
+    } else {
+      camError.value = '无法打开摄像头：' + (e && e.message ? e.message : name || '未知错误')
+    }
     if (mode.value === 'camera') errorBeep()
   }
 }
@@ -393,23 +441,12 @@ async function startCamera() {
 function teardownCamera() {
   loopRunning = false
   motionCounter.reset()
+  camStartSeq++
   if (rafId) {
     cancelAnimationFrame(rafId)
     rafId = null
   }
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((t) => t.stop())
-    mediaStream = null
-  }
-  if (videoEl) {
-    try {
-      videoEl.srcObject = null
-    } catch (e) {
-      /* ignore */
-    }
-    if (videoEl.parentNode) videoEl.parentNode.removeChild(videoEl)
-    videoEl = null
-  }
+  stopMediaStream()
   if (skeletonCanvas) {
     clearOverlay(skeletonCanvas)
     if (skeletonCanvas.parentNode) skeletonCanvas.parentNode.removeChild(skeletonCanvas)
