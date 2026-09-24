@@ -42,6 +42,149 @@ export function clearOverlay(canvas) {
   if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height)
 }
 
+// 离屏剪影缓存：key -> canvas（不透明人体，一次性构建）
+const tmplCache = new Map()
+
+function buildSilhouette(w, h, dpr) {
+  const key = `${w}x${h}x${dpr}`
+  if (tmplCache.has(key)) return tmplCache.get(key)
+  if (typeof document === 'undefined') return null
+
+  const off = document.createElement('canvas')
+  off.width = Math.max(1, Math.round(w * dpr))
+  off.height = Math.max(1, Math.round(h * dpr))
+  const c = off.getContext('2d')
+  if (!c) return null
+  c.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+  const H = Math.min(h * 0.86, w * 2.6)
+  const cx = w * 0.5
+  const top = (h - H) * 0.46
+  const Y = (f) => top + f * H
+
+  // 7.5 头身，椭圆头 + 细颈 + 圆肩
+  const headRx = 0.050 * H
+  const headRy = 0.066 * H
+  const headCy = Y(0.066)
+  const shoulderY = Y(0.205)
+  const shHW = 0.115 * H
+  const waistY = Y(0.44)
+  const waHW = 0.078 * H
+  const hipY = Y(0.52)
+  const hiHW = 0.095 * H
+  const elbowY = Y(0.42)
+  const wristY = Y(0.60)
+  const kneeY = Y(0.73)
+  const ankleY = Y(0.95)
+
+  const SOLID = '#12B76A'
+  c.fillStyle = SOLID
+  c.strokeStyle = SOLID
+  c.lineCap = 'round'
+  c.lineJoin = 'round'
+
+  const seg = (x1, y1, x2, y2, lw) => {
+    c.lineWidth = lw
+    c.beginPath()
+    c.moveTo(x1, y1)
+    c.lineTo(x2, y2)
+    c.stroke()
+  }
+  const disc = (x, y, r) => {
+    c.beginPath()
+    c.arc(x, y, r, 0, Math.PI * 2)
+    c.fill()
+  }
+
+  // 头（椭圆）
+  c.beginPath()
+  c.ellipse(cx, headCy, headRx, headRy, 0, 0, Math.PI * 2)
+  c.fill()
+  // 颈
+  seg(cx, headCy + headRy * 0.4, cx, shoulderY, 0.055 * H)
+
+  // 躯干：圆肩 → 收腰 → 髋
+  c.beginPath()
+  c.moveTo(cx - shHW + shHW * 0.35, shoulderY - shHW * 0.28)
+  c.quadraticCurveTo(cx, shoulderY - shHW * 0.42, cx + shHW - shHW * 0.35, shoulderY - shHW * 0.28)
+  c.quadraticCurveTo(cx + shHW, shoulderY - shHW * 0.1, cx + shHW, shoulderY + shHW * 0.25)
+  c.bezierCurveTo(cx + shHW, shoulderY + 0.12 * H, cx + waHW, waistY - 0.05 * H, cx + waHW, waistY)
+  c.bezierCurveTo(cx + waHW, waistY + 0.05 * H, cx + hiHW, hipY - 0.05 * H, cx + hiHW, hipY)
+  c.quadraticCurveTo(cx, hipY + 0.04 * H, cx - hiHW, hipY)
+  c.bezierCurveTo(cx - hiHW, hipY - 0.05 * H, cx - waHW, waistY + 0.05 * H, cx - waHW, waistY)
+  c.bezierCurveTo(cx - waHW, waistY - 0.05 * H, cx - shHW, shoulderY + 0.12 * H, cx - shHW, shoulderY + shHW * 0.25)
+  c.quadraticCurveTo(cx - shHW, shoulderY - shHW * 0.1, cx - shHW + shHW * 0.35, shoulderY - shHW * 0.28)
+  c.closePath()
+  c.fill()
+
+  for (const s of [-1, 1]) {
+    const sx = cx + s * shHW * 0.82
+    const ex = cx + s * (shHW + 0.014 * H)
+    const wx = cx + s * (shHW + 0.006 * H)
+    // 手臂：上臂粗 → 前臂细 → 手
+    seg(sx, shoulderY + 0.012 * H, ex, elbowY, 0.07 * H)
+    seg(ex, elbowY, wx, wristY, 0.05 * H)
+    disc(wx, wristY + 0.022 * H, 0.03 * H)
+    // 腿：大腿粗 → 小腿细 → 脚
+    const hx = cx + s * hiHW * 0.5
+    const kx = cx + s * hiHW * 0.48
+    const ax = cx + s * hiHW * 0.42
+    seg(hx, hipY, kx, kneeY, 0.10 * H)
+    seg(kx, kneeY, ax, ankleY, 0.065 * H)
+    seg(ax, ankleY, ax + s * 0.055 * H, ankleY + 0.015 * H, 0.05 * H)
+  }
+
+  tmplCache.set(key, off)
+  return off
+}
+
+/**
+ * 人形站位板（类天天跳绳）：半透明人体剪影，提示全身入画位置。
+ * 离屏构建不透明剪影后整体半透明合成 —— 无关节黑洞、无重叠发暗。
+ */
+export function drawHumanTemplate(canvas, opts = {}) {
+  if (!canvas) return
+  const box = canvas.parentElement
+  const size = resizeOverlay(canvas, box)
+  if (!size) return
+  const { w, h, dpr } = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  if (opts.clear !== false) ctx.clearRect(0, 0, w, h)
+
+  const off = buildSilhouette(w, h, dpr)
+  if (!off) return
+
+  const alpha = opts.alpha ?? 0.5
+  const glow = opts.glow || 'rgba(18,183,106,0.65)'
+
+  ctx.save()
+  ctx.globalAlpha = alpha
+  ctx.shadowColor = glow
+  ctx.shadowBlur = 16
+  ctx.drawImage(off, 0, 0, w, h)
+  ctx.restore()
+
+  // 站位虚线
+  const H = Math.min(h * 0.86, w * 2.6)
+  const cx = w * 0.5
+  const top = (h - H) * 0.46
+  const ankleY = top + 0.95 * H
+  const shHW = 0.115 * H
+  ctx.save()
+  ctx.globalAlpha = alpha * 0.8
+  ctx.setLineDash([7, 9])
+  ctx.lineWidth = Math.max(2, Math.min(w, h) * 0.006)
+  ctx.strokeStyle = 'rgba(108,233,166,0.9)'
+  ctx.beginPath()
+  ctx.moveTo(cx - shHW * 1.6, ankleY + 0.05 * H)
+  ctx.lineTo(cx + shHW * 1.6, ankleY + 0.05 * H)
+  ctx.stroke()
+  ctx.restore()
+}
+
 export function drawSkeleton(canvas, keypoints, video, opts = {}) {
   if (!canvas || !keypoints || !keypoints.length) return
   const box = canvas.parentElement
