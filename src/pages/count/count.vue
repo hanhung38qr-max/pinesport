@@ -133,6 +133,7 @@ import { MotionCounter, motionThresholdFor } from '../../utils/motion-count.js'
 import {
   ensureOverlayCanvas,
   drawSkeleton,
+  drawHumanTemplate,
   clearOverlay
 } from '../../utils/skeleton-draw.js'
 import { getSettings, addSession, estimateCalories } from '../../utils/store.js'
@@ -406,7 +407,7 @@ async function startCamera() {
     videoEl.srcObject = mediaStream
     box.insertBefore(videoEl, box.firstChild)
     skeletonCanvas = ensureOverlayCanvas(box)
-    clearOverlay(skeletonCanvas)
+    drawHumanTemplate(skeletonCanvas)
     try {
       await videoEl.play()
     } catch (e) {
@@ -494,14 +495,14 @@ async function loop() {
         energyView.value = motionCounter.energy
       }
 
-      // 可选骨架预览（仅 H5 开关打开时）
+      // 可选骨架预览（仅 H5 开关打开时）；否则画人形站位板
       const eng = poseEngine
       if (skeletonOn.value && eng && eng.isModelReady()) {
         const pose = await eng.estimatePose(videoEl)
         if (!pose || !pose.keypoints || !pose.keypoints.length) {
           poseVisible.value = false
           conf.value = 0
-          if (skeletonCanvas) clearOverlay(skeletonCanvas)
+          if (skeletonCanvas) drawHumanTemplate(skeletonCanvas)
         } else {
           if (skeletonCanvas) {
             drawSkeleton(skeletonCanvas, pose.keypoints, videoEl, { mirror: true })
@@ -512,7 +513,7 @@ async function loop() {
           poseVisible.value = torso >= 0.2
         }
       } else if (!skeletonOn.value) {
-        if (skeletonCanvas) clearOverlay(skeletonCanvas)
+        if (skeletonCanvas) drawHumanTemplate(skeletonCanvas, { alpha: running.value ? 0.35 : 0.55 })
         poseVisible.value = false
         conf.value = 0
       }
@@ -796,8 +797,11 @@ function goBack() {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center center;
   transform: scaleX(-1);
+  transform-origin: center center;
   background: #000;
+  z-index: 1;
 }
 .cam__skeleton {
   position: absolute;
@@ -805,7 +809,7 @@ function goBack() {
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 2;
+  z-index: 3;
 }
 .cam__overlay {
   position: absolute;
