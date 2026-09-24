@@ -17,6 +17,9 @@ export function ensureOverlayCanvas(box) {
   if (canvas) return canvas
   canvas = document.createElement('canvas')
   canvas.className = 'cam__skeleton'
+  // 运行时创建的元素拿不到 scoped 样式，必须内联：绝对定位铺满并压在视频上
+  canvas.style.cssText =
+    'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3;'
   box.appendChild(canvas)
   return canvas
 }

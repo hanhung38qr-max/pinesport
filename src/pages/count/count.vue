@@ -399,6 +399,12 @@ async function startCamera() {
     }
     videoEl = document.createElement('video')
     videoEl.className = 'cam__video'
+    // 运行时创建的元素拿不到 scoped 样式，必须内联
+    videoEl.style.cssText =
+      'position:absolute;inset:0;width:100%;height:100%;' +
+      'object-fit:cover;object-position:center center;' +
+      'transform:scaleX(-1);transform-origin:center center;' +
+      'background:#000;z-index:1;'
     videoEl.autoplay = true
     videoEl.muted = true
     videoEl.playsInline = true
