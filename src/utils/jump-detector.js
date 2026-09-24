@@ -67,15 +67,16 @@ export function bodyCenterY(keypoints, imageHeight) {
     rh = score(12)
 
   const parts = []
-  if (lh > 0.25 && rh > 0.25) {
+  if (lh > 0.3 && rh > 0.3) {
     parts.push((y(11) + y(12)) / 2)
-  }
-  if (ls > 0.25 && rs > 0.25) {
+  } else if (ls > 0.3 && rs > 0.3) {
     parts.push((y(5) + y(6)) / 2)
+  } else if (score(0) > 0.35) {
+    parts.push(y(0))
+  } else {
+    return null
   }
-  if (score(0) > 0.3) parts.push(y(0))
 
-  if (!parts.length) return null
   const mean = parts.reduce((a, b) => a + b, 0) / parts.length
   const denom = imageHeight || 1
   return mean / denom
