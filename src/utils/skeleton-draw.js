@@ -332,3 +332,101 @@ export function drawSkeleton(canvas, keypoints, video, opts = {}) {
   ctx.shadowBlur = 0
   ctx.globalAlpha = 1
 }
+
+const MP_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 7], [0, 4], [4, 5], [5, 6], [6, 8],
+  [9, 10], [11, 12], [11, 13], [13, 15], [15, 17], [15, 19], [17, 19],
+  [12, 14], [14, 16], [16, 18], [18, 20], [11, 23], [12, 24], [23, 24],
+  [23, 25], [24, 26], [25, 27], [26, 28], [27, 29], [28, 30], [29, 31], [30, 32], [31, 33]
+]
+
+/** MediaPipe 33 landmark 绘制（归一化坐标，visibility 作置信度） */
+export function drawMediaPipePose(canvas, landmarks, video, opts = {}) {
+  if (!canvas || !landmarks || !landmarks.length) return
+  const box = canvas.parentElement
+  const size = resizeOverlay(canvas, box)
+  if (!size) return
+  const { w, h, dpr } = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, w, h)
+
+  const vw = video && video.videoWidth ? video.videoWidth : 640
+  const vh = video && video.videoHeight ? video.videoHeight : 480
+  const scale = Math.max(w / vw, h / vh)
+  const drawW = vw * scale
+  const drawH = vh * scale
+  const offX = (w - drawW) / 2
+  const offY = (h - drawH) / 2
+  const mirror = opts.mirror !== false
+
+  const pts = landmarks.map((lm) => {
+    let nx = lm.x
+    if (mirror) nx = 1 - nx
+    return { x: offX + nx * drawW, y: offY + lm.y * drawH, score: lm.visibility ?? 0 }
+  })
+
+  const lw = Math.max(3, Math.min(w, h) * 0.01)
+  const r = Math.max(5, Math.min(w, h) * 0.012)
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.shadowColor = 'rgba(18,183,106,0.6)'
+  ctx.shadowBlur = 10
+
+  for (const [a, b] of MP_CONNECTIONS) {
+    const pa = pts[a]
+    const pb = pts[b]
+    if (!pa || !pb) continue
+    if (pa.score < DRAW_CONF || pb.score < DRAW_CONF) continue
+    const weak = pa.score < 0.35 || pb.score < 0.35
+    ctx.globalAlpha = weak ? 0.45 : 1
+    ctx.strokeStyle = EDGE_COLOR
+    ctx.lineWidth = lw
+    ctx.beginPath()
+    ctx.moveTo(pa.x, pa.y)
+    ctx.lineTo(pb.x, pb.y)
+    ctx.stroke()
+  }
+  ctx.globalAlpha = 1
+
+  // 髋部强调（23/24）
+  const lh = pts[23]
+  const rh = pts[24]
+  if (lh && rh && lh.score >= DRAW_CONF && rh.score >= DRAW_CONF) {
+    ctx.strokeStyle = HIP_COLOR
+    ctx.lineWidth = lw + 1
+    ctx.beginPath()
+    ctx.moveTo(lh.x, lh.y)
+    ctx.lineTo(rh.x, rh.y)
+    ctx.stroke()
+    for (const p of [lh, rh]) {
+      ctx.beginPath()
+      ctx.fillStyle = HIP_COLOR
+      ctx.arc(p.x, p.y, r + 2, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    const hx = (lh.x + rh.x) / 2
+    const hy = (lh.y + rh.y) / 2
+    ctx.beginPath()
+    ctx.fillStyle = 'rgba(255,255,255,0.95)'
+    ctx.arc(hx, hy, r * 0.55, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i]
+    if (!p || p.score < DRAW_CONF) continue
+    if (i === 23 || i === 24) continue
+    ctx.shadowBlur = 4
+    ctx.beginPath()
+    ctx.fillStyle = p.score > 0.5 ? JOINT_COLOR : '#FEC84B'
+    ctx.globalAlpha = p.score < 0.3 ? 0.55 : 1
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+  }
+  ctx.shadowBlur = 0
+  ctx.globalAlpha = 1
+}

@@ -103,7 +103,7 @@ import { onLoad, onShow, onHide } from '@dcloudio/uni-app'
 import { MotionCounter, motionThresholdFor } from '../../utils/motion-count.js'
 import {
   ensureOverlayCanvas,
-  drawSkeleton,
+  drawMediaPipePose,
   drawHumanTemplate,
   clearOverlay
 } from '../../utils/skeleton-draw.js'
@@ -476,17 +476,16 @@ async function loop() {
       // 可选骨架预览（仅 H5 开关打开时）；否则画人形站位板
       const eng = poseEngine
       if (skeletonOn.value && eng && eng.isModelReady()) {
-        const pose = await eng.estimatePose(videoEl)
-        if (!pose || !pose.keypoints || !pose.keypoints.length) {
+        const lm = eng.estimatePose(videoEl)
+        if (!lm || !lm.length) {
           poseVisible.value = false
           conf.value = 0
           if (skeletonCanvas) drawHumanTemplate(skeletonCanvas)
         } else {
           if (skeletonCanvas) {
-            drawSkeleton(skeletonCanvas, pose.keypoints, videoEl, { mirror: true })
+            drawMediaPipePose(skeletonCanvas, lm, videoEl, { mirror: true })
           }
-          const torso =
-            pose.keypoints.reduce((a, k) => a + (k.score || 0), 0) / pose.keypoints.length
+          const torso = lm.reduce((a, k) => a + (k.visibility ?? 0), 0) / lm.length
           conf.value = torso
           poseVisible.value = torso >= 0.2
         }

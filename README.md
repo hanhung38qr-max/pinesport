@@ -17,14 +17,14 @@ uni-app (Vue3) 跳绳 App：**无任何广告**，数据只存本机。核心是
 | 方案 | 端侧成本 | 准确度 | 结论 |
 |------|---------|--------|------|
 | OpenPose | 高（需 GPU/大模型） | 高（多人） | 手机端过重，弃 |
-| MoveNet Lightning | 低（单人 192px，WebGL） | 高 | H5 骨架预览可选 |
+| MediaPipe PoseLandmarker | 低（WASM，端侧） | 高 | ✅ H5 骨架预览，模型/wasm 全本地 |
 | MediaPipe BlazePose | 中 | 高 | 可作备选 |
 | **帧差运动检测** | 极低 | 中 | ✅ App 默认计数（不加载 TF） |
 
 默认计数：帧差运动能量（64×48 灰度）→ EMA 相对基线 → 迟滞阈值 + 300ms 不应期；运动纵向跨度用于"全身入画"判定与自动开始。
 
 > App 端不打包 TensorFlow/MoveNet（H5 才动态加载骨架），避免 WebView 崩溃与包体膨胀。
-> 骨架模型启动时后台预加载并预热着色器；把 `model.json`+权重分片放进 `src/static/movenet/` 即自动改走本地、离线秒开。
+> 骨架 = MediaPipe PoseLandmarker：`pose_landmarker_lite.task`(5.8MB) 与 wasm 均打包进 `src/static/mediapipe/`，运行时零下载、离线可用；启动即后台预加载+预热。
 
 ## 开发
 
@@ -51,7 +51,7 @@ src/
   pages/settings  设置（体重、目标、音效、灵敏度）
   utils/store.js  本地存储与日聚合
   utils/motion-count.js  帧差计数（App 默认）
-  utils/pose-engine.js  MoveNet 封装（仅 H5 动态加载）
+  utils/pose-engine.js  MediaPipe PoseLandmarker 封装（仅 H5，全本地）
   utils/jump-detector.js  跳跃峰值检测
   utils/achievements.js  成就规则
   utils/audio.js  计数提示音（WebAudio，无音频资源）
