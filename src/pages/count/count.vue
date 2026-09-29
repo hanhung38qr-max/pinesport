@@ -27,7 +27,7 @@
         <text class="cam__cd-tip">站好，即将开始</text>
       </view>
 
-      <view v-if="camReady && (running || poseVisible || skeletonOn)" class="cam__fps">
+      <view v-if="camReady && (running || poseVisible || skeletonOn || modelReady)" class="cam__fps">
         {{ fps }} FPS · {{ confText }} · {{ poseStatus }}
       </view>
       <view v-if="camReady && !running && countdown === 0" class="cam__guide">
@@ -101,6 +101,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { onLoad, onShow, onHide } from '@dcloudio/uni-app'
 import { MotionCounter, motionThresholdFor } from '../../utils/motion-count.js'
+import { PoseJumpCounter, poseMinJumpFor } from '../../utils/pose-jump.js'
 import {
   ensureOverlayCanvas,
   drawMediaPipePose,
@@ -142,15 +143,20 @@ const skeletonOn = ref(false)
 const isH5 = typeof process !== 'undefined' && process.env && process.env.UNI_PLATFORM === 'h5'
 const poseStatus = computed(() => {
   if (poseStatusMsg.value) return poseStatusMsg.value
-  if (!skeletonOn.value) return energyView.value > 0.004 ? '检测到运动' : '画面静止'
-  if (!modelReady.value) return '骨架模型加载中…'
-  if (conf.value >= 0.45) return '已锁定人形'
-  if (conf.value >= 0.25) return '识别中'
-  return '未检测到人'
+  if (!modelReady.value && skeletonOn.value) return '骨架模型加载中…'
+  if (countSource.value === 'pose') {
+    if (conf.value >= 0.45) return '姿态锁定·髋部计数'
+    if (conf.value >= 0.25) return '姿态识别中'
+    return '未检测到人'
+  }
+  return energyView.value > 0.004 ? '帧差计数中' : '画面静止'
 })
 
 const motionCounter = new MotionCounter()
+const poseJump = new PoseJumpCounter()
 const countdown = ref(0)
+const countSource = ref('pose') // 'pose' | 'motion'
+const personFullBody = ref(false)
 const zoomCap = ref(null)
 const zoomVal = ref(1)
 let videoTrack = null
@@ -241,6 +247,7 @@ function setSensitivity(id) {
 
 function applySensitivity() {
   motionCounter.setThreshold(motionThresholdFor(settings.value.cameraSensitivity))
+  poseJump.setMinJump(poseMinJumpFor(settings.value.cameraSensitivity))
 }
 
 async function toggleSkeleton() {
@@ -329,6 +336,21 @@ function stopMediaStream() {
 
 let camStartSeq = 0
 
+/** H5：自动后台加载姿态模型，让髋部计数成为默认路径；失败则回退帧差 */
+function ensureModelLoaded() {
+  if (!isH5) return
+  if (modelReady.value) return
+  ensurePoseEngine()
+    .then(async (eng) => {
+      await eng.getDetector()
+      modelReady.value = true
+    })
+    .catch((e) => {
+      console.warn('pose model load failed, fallback to motion', e)
+      modelReady.value = false
+    })
+}
+
 async function startCamera() {
   const seq = ++camStartSeq
   camError.value = ''
@@ -399,6 +421,9 @@ async function startCamera() {
     poseStatusMsg.value = ''
     modelReady.value = false
     motionCounter.reset()
+    poseJump.reset()
+    personFullBody.value = false
+    ensureModelLoaded()
     if (!loopRunning) loop()
   } catch (e) {
     if (seq !== camStartSeq) return
@@ -421,6 +446,8 @@ async function startCamera() {
 function teardownCamera() {
   loopRunning = false
   motionCounter.reset()
+  poseJump.reset()
+  personFullBody.value = false
   camStartSeq++
   if (rafId) {
     cancelAnimationFrame(rafId)
@@ -464,35 +491,64 @@ async function loop() {
     inflight = true
     frameCount++
     try {
-      // 轻量帧差计数（始终采样）
-      const inc = motionCounter.sample(videoEl)
-      energyView.value = motionCounter.energy
-      if (running.value) {
-        if (inc > 0) onJump()
-      } else if (!finished.value) {
-        evaluateAutoStart(inc)
-      }
-
-      // 可选骨架预览（仅 H5 开关打开时）；否则画人形站位板
+      const now = Date.now()
       const eng = poseEngine
-      if (skeletonOn.value && eng && eng.isModelReady()) {
-        const lm = eng.estimatePose(videoEl)
-        if (!lm || !lm.length) {
-          poseVisible.value = false
-          conf.value = 0
-          if (skeletonCanvas) drawHumanTemplate(skeletonCanvas)
-        } else {
-          if (skeletonCanvas) {
-            drawMediaPipePose(skeletonCanvas, lm, videoEl, { mirror: true })
-          }
+      const modelReadyNow = !!(eng && eng.isModelReady())
+
+      // ---- 姿态推理（主计数源）----
+      let lm = null
+      if (modelReadyNow) {
+        lm = eng.estimatePose(videoEl, now)
+        if (lm && lm.length) {
           const torso = lm.reduce((a, k) => a + (k.visibility ?? 0), 0) / lm.length
           conf.value = torso
           poseVisible.value = torso >= 0.2
+          // 全身入画：头(0) + 双踝(27,31) 都可见
+          const head = lm[0]
+          const ankL = lm[27]
+          const ankR = lm[31]
+          personFullBody.value =
+            !!(head && ankL && ankR &&
+              (head.visibility ?? 0) > 0.3 &&
+              (ankL.visibility ?? 0) > 0.3 &&
+              (ankR.visibility ?? 0) > 0.3)
+          if (skeletonOn.value) {
+            drawMediaPipePose(skeletonCanvas, lm, videoEl, { mirror: true })
+          }
+        } else {
+          conf.value = 0
+          poseVisible.value = false
+          personFullBody.value = false
         }
-      } else if (!skeletonOn.value) {
-        if (skeletonCanvas) drawHumanTemplate(skeletonCanvas, { alpha: running.value ? 0.35 : 0.55 })
-        poseVisible.value = false
-        conf.value = 0
+      }
+
+      // ---- 计数：姿态优先，帧差降级 ----
+      const usePose = !!(lm && lm.length)
+      let counted = 0
+      if (usePose) {
+        countSource.value = 'pose'
+        counted = poseJump.analyze(lm, now)
+      } else {
+        countSource.value = 'motion'
+        counted = motionCounter.sample(videoEl, now)
+        energyView.value = motionCounter.energy
+      }
+
+      if (running.value) {
+        if (counted > 0) onJump()
+      } else if (!finished.value) {
+        evaluateAutoStart(counted, usePose)
+      }
+
+      // ---- 覆盖层：没开骨架且没识别到人时画站位人形板 ----
+      if (!skeletonOn.value && !usePose) {
+        if (skeletonCanvas) {
+          drawHumanTemplate(skeletonCanvas, { alpha: running.value ? 0.35 : 0.55 })
+        }
+      } else if (!skeletonOn.value && usePose) {
+        if (skeletonCanvas) {
+          drawHumanTemplate(skeletonCanvas, { alpha: running.value ? 0.3 : 0.5 })
+        }
       }
     } catch (e) {
       /* drop frame */
@@ -516,13 +572,14 @@ function onJump() {
 }
 
 // --- 自动开始：全身入画 + 捕捉到跳跃节奏 → 倒数 3/2/1 ---
-function evaluateAutoStart(inc) {
+function evaluateAutoStart(counted, usePose) {
   const now = Date.now()
-  if (inc > 0) preRoll.push(now)
+  if (counted > 0) preRoll.push(now)
   while (preRoll.length && now - preRoll[0] > 2500) preRoll.shift()
 
   const rhythm = preRoll.length >= 2
-  const inFrame = motionCounter.spanHold > 0.35
+  // 全身入画：优先用姿态判断（头+双踝可见），否则回退帧差跨度
+  const inFrame = usePose ? personFullBody.value : motionCounter.spanHold > 0.35
 
   if (countdown.value > 0) {
     if (!inFrame) stopCountdown()
@@ -563,6 +620,7 @@ function start() {
   saved.value = false
   running.value = true
   motionCounter.reset()
+  poseJump.reset()
   jumpTimestamps = []
   startTime = Date.now()
   baseElapsed = 0
@@ -615,6 +673,7 @@ function resetAll() {
   stopCountdown()
   preRoll = []
   motionCounter.reset()
+  poseJump.reset()
   jumpTimestamps = []
   clearTimers()
 }
