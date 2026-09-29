@@ -5,11 +5,11 @@ let loadFailed = false
 let warmed = false
 let lastVideoTs = 0
 
-const WASM_BASE_CANDIDATES = ['/static/mediapipe/wasm', 'static/mediapipe/wasm']
-const MODEL_CANDIDATES = [
-  '/static/mediapipe/pose_landmarker_lite.task',
-  'static/mediapipe/pose_landmarker_lite.task'
-]
+// 模型与 wasm 全部本地打包。放根 public/ 而非 src/static：
+// uni dev 冷启动扫描 src/static 下的子目录会抛 EISDIR 崩溃（cli bug）。
+// vite 会自动服务 public/ 并拷进 dist。
+const WASM_BASE_CANDIDATES = ['/mediapipe', 'mediapipe']
+const MODEL_CANDIDATES = ['/mediapipe/pose_landmarker_lite.task', 'mediapipe/pose_landmarker_lite.task']
 
 async function firstExisting(candidates) {
   for (const url of candidates) {
